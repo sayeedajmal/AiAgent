@@ -1,114 +1,140 @@
 import OpenAI from "openai";
-import { configDotenv } from "dotenv";
+import { config as configDotenv } from "dotenv";
 import readlineSync from "readline-sync";
+import { exec } from "node:child_process";
+import fs from "fs/promises";
+import chalk from "chalk";
 
 configDotenv();
 
 const OPENAI_KEY = process.env.OPENAI_KEY;
-const openai = new OpenAI({
-  apiKey: OPENAI_KEY,
-});
 
-function getWeatherDetails(city = "") {
-  city = city.toLowerCase();
-  if (city === "dubai") return "10°";
-  if (city === "new york") return "20°";
-  if (city === "london") return "30°";
-  if (city === "paris") return "40°";
-  if (city === "tokyo") return "50°";
-  return "0°";
+const openai = new OpenAI({ apiKey: OPENAI_KEY });
+
+async function readFile(path) {
+  try {
+    return await fs.readFile(path, "utf-8");
+  } catch (err) {
+    return `Error reading file: ${err.message}`;
+  }
+}
+
+async function writeFile({ path, content }) {
+  try {
+    await fs.writeFile(path, content, "utf-8");
+    return `✅ File written successfully to ${path}`;
+  } catch (err) {
+    return `Error writing file: ${err.message}`;
+  }
+}
+
+async function appendFile({ path, content }) {
+  try {
+    await fs.appendFile(path, content, "utf-8");
+    return `✅ Content appended successfully to ${path}`;
+  } catch (err) {
+    return `Error appending to file: ${err.message}`;
+  }
+}
+
+function executeCommand(command) {
+  return new Promise((resolve) => {
+    exec(command, (error, stdout, stderr) => {
+      if (error) {
+        resolve(`❌ Command error: ${error.message}`);
+      } else {
+        resolve(`📤 STDOUT:\n${stdout}\n📥 STDERR:\n${stderr}`);
+      }
+    });
+  });
 }
 
 const tools = {
-  getWeatherDetails,
+  readFile,
+  writeFile,
+  appendFile,
+  executeCommand,
 };
 
 const SYSTEM_PROMPT = `
-You are an AI Assistant with START, PLAN, ACTION, OBSERVATION, and OUTPUT States.
-Wait for the user prompt and first PLAN using available Tools.
-After planning, take the ACTION with the appropriate Tools and wait for OBSERVATION based on Action.
-Once you get the OBSERVATION, return the AI response based on START prompt and OBSERVATION.
-Strictly follow the output format as a JSON object.
+You are a Dev CLI AI Assistant with structured reasoning in START, PLAN, ACTION, OBSERVATION, and OUTPUT format.
+Your responses MUST be in JSON format — every output must strictly follow the JSON object structure.
 
-Available Tools:
-  - function getWeatherDetails(city: Str): Str
+Available Tools (you must call them using ACTION):
+- function readFile(path: Str): Str
+- function writeFile({ path: Str, content: Str }): Str
+- function appendFile({ path: Str, content: Str }): Str
+- function executeCommand(command: Str): Str
 
 Example:
-
 START:
-{"type": "user", "user": "what's the sum of weather of Dubai and New York?"}
-{"type": "plan", "plan": "I will call getWeatherDetails for Dubai"}
-{"type": "action", "function": "getWeatherDetails", "input": "Dubai"}
-{"type": "observation", "observation": "10°"}
-{"type": "plan", "plan": "I will call getWeatherDetails for New York"}
-{"type": "action", "function": "getWeatherDetails", "input": "New York"}
-{"type": "observation", "observation": "20°"}
-{"type": "output", "output": "The sum of weather of Dubai and New York is 30°"}
+{"type":"user","user":"create a file index.js with console.log"}
+{"type":"plan","plan":"I will use writeFile to create index.js"}
+{"type":"action","function":"writeFile","input":{"path":"index.js","content":"console.log('Hello World')"}}
+{"type":"observation","observation":"✅ File written successfully to index.js"}
+{"type":"output","output":"File created successfully."}
 `;
 
 const messages = [{ role: "system", content: SYSTEM_PROMPT }];
 
 async function chatLoop() {
+  console.log(chalk.greenBright("🧠 Cursor AI CLI ready!"));
+
   while (true) {
-    const query = readlineSync.question(">> ");
-    const userMsg = {
-      type: "user",
-      user: query,
-    };
+    const query = readlineSync.question(chalk.cyan(">> "));
 
     messages.push({
       role: "user",
-      content: JSON.stringify(userMsg),
+      content: JSON.stringify({ type: "user", user: query }),
     });
 
     while (true) {
       const chat = await openai.chat.completions.create({
         model: "gpt-4o",
-        messages: messages,
+        messages,
         response_format: { type: "json_object" },
       });
 
       const result = chat.choices?.[0]?.message?.content?.trim();
-
-      console.log("📦 AI CHAIN:", result);
-
       if (!result) break;
 
-      messages.push({
-        role: "assistant",
-        content: result,
-      });
+      console.log(chalk.gray("📦 AI CHAIN:"), result);
+      messages.push({ role: "assistant", content: result });
 
       const parsed = JSON.parse(result);
 
       if (parsed.type === "output") {
-        console.log("🤖 OUTPUT:", parsed.output);
+        console.log(chalk.yellowBright("🤖 OUTPUT:"), parsed.output);
         break;
+      }
+
+      if (parsed.type === "plan") {
+        console.log(chalk.magentaBright("🧠 PLAN:"), parsed.plan);
       }
 
       if (parsed.type === "action") {
         const fn = tools[parsed.function];
-        const observation = fn(parsed.input);
+        if (!fn) {
+          console.log(chalk.red(`❌ Unknown function: ${parsed.function}`));
+          break;
+        }
 
-        const obsObj = {
-          type: "observation",
-          observation: observation,
-        };
+        const input = parsed.input;
+        const observation = await fn(input);
 
         messages.push({
           role: "developer",
-          content: JSON.stringify(obsObj),
+          content: JSON.stringify({
+            type: "observation",
+            observation,
+          }),
         });
 
-        console.log("⚙️ ACTION:", `${parsed.function}("${parsed.input}")`);
-      }
-
-      if (parsed.type === "plan") {
-        console.log("🧠 PLAN:", parsed.plan);
+        console.log(chalk.blueBright(`⚙️ ACTION:`), `${parsed.function}(${JSON.stringify(input)})`);
       }
 
       if (parsed.type === "observation") {
-        console.log("👁️ OBSERVATION:", parsed.observation);
+        console.log(chalk.green("👁️ OBSERVATION:"), parsed.observation);
       }
     }
   }
