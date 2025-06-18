@@ -1,7 +1,10 @@
-const OPENAI_KEY = ""
 import OpenAI from "openai";
+import { configDotenv } from "dotenv";
 import readlineSync from "readline-sync";
 
+configDotenv();
+
+const OPENAI_KEY = process.env.OPENAI_KEY;
 const openai = new OpenAI({
   apiKey: OPENAI_KEY,
 });
